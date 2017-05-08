@@ -22,6 +22,7 @@ test:
 
 production:
   <<: *default
+  host: <%= ENV['TEST_BLOG_DATABASE_HOST'] %>
   database: test_blog_production
-  username: <%= ENV['TEST_BLOG_DATABASE_USER'] %>
+  username: test_blog
   password: <%= ENV['TEST_BLOG_DATABASE_PASSWORD'] %>
