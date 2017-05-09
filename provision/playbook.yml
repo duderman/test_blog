@@ -1,0 +1,168 @@
+---
+- hosts: 'all'
+  remote_user: 'ubuntu'
+  become: true
+  gather_facts: no
+
+  pre_tasks:
+    - name: 'install python2'
+      raw: sudo apt-get -y install python-simplejson
+
+  vars:
+    ruby_version: '2.3.3'
+    user: 'deploy'
+    home: '/home/{{ user }}'
+    rbenv_root: '{{ home }}/.rbenv'
+    name: 'test_blog'
+    application: '{{ home }}/{{ name }}'
+
+  environment:
+    TEST_BLOG_DATABASE_HOST: "{{database_host}}"
+    TEST_BLOG_DATABASE_PASSWORD: "{{database_password}}"
+    RAILS_ENV: "{{rails_env_name}}"
+    RACK_ENV: "{{rails_env_name}}"
+    SECRET_KEY_BASE: "{{secret_key_base}}"
+
+  tasks:
+    - include: tasks/_set_vars.yml tags=always
+
+    - name: 'apt | update'
+      action: 'apt update_cache=yes'
+
+    - name: 'apt | install dependencies'
+      action: 'apt pkg={{ item }}'
+      with_items:
+        - 'build-essential'
+        - 'libssl-dev'
+        - 'libyaml-dev'
+        - 'libreadline6-dev'
+        - 'zlib1g-dev'
+        - 'libcurl4-openssl-dev'
+        - 'git'
+        - 'postgresql-contrib'
+        - 'libpq-dev'
+        - 'imagemagick'
+        - 'libmagickwand-dev'
+        - 'nodejs'
+        - 'htop'
+        - 'collectl'
+
+    - name: 'account | create'
+      user: 'name={{ user }} shell=/bin/bash'
+
+    - name: 'account | copy authorized keys'
+      shell: 'mkdir -p {{ home }}/.ssh -m 700 && cp /root/.ssh/authorized_keys {{ home }}/.ssh && chown -R {{ user }}:{{ user }} {{ home }}/.ssh'
+
+    - name: 'account | copy ssh private key'
+      copy: 'src=keys/id_rsa dest={{ home }}/.ssh/id_rsa owner={{ user }} group={{ user }} mode=0600'
+
+    - name: 'account | copy ssh public key'
+      copy: 'src=keys/id_rsa.pub dest={{ home }}/.ssh/id_rsa.pub owner={{ user }} group={{ user }} mode=0644'
+
+    - name: 'rbenv | clone repo'
+      git: 'repo=git://github.com/sstephenson/rbenv.git dest={{ rbenv_root }} accept_hostkey=yes'
+
+    - name: 'rbenv | check ruby-build installed'
+      command: 'test -x {{ rbenv_root }}/plugins/ruby-build'
+      register: 'plugin_installed'
+      ignore_errors: yes
+
+    - name: 'rbenv | add bin to path'
+      shell: echo 'export PATH="$HOME/.rbenv/bin:$PATH"' >> {{ home }}/.bashrc
+      when: 'plugin_installed|failed'
+
+    - name: 'rbenv | init'
+      shell: echo 'eval "$(rbenv init -)"' >> {{ home }}/.bashrc
+      when: 'plugin_installed|failed'
+
+    - name: 'rbenv | clone ruby-build repo'
+      git: 'repo=git://github.com/sstephenson/ruby-build.git dest={{ rbenv_root }}/plugins/ruby-build accept_hostkey=yes'
+      when: 'plugin_installed|failed'
+
+    - name: 'rbenv | check ruby {{ ruby_version }} installed'
+      shell: 'RBENV_ROOT={{ rbenv_root }} PATH="$RBENV_ROOT/bin:$PATH" rbenv versions | grep {{ ruby_version }}'
+      register: 'ruby_installed'
+      ignore_errors: yes
+
+    - name: 'rbenv | install ruby {{ ruby_version }}'
+      shell: 'RBENV_ROOT={{ rbenv_root }} PATH="$RBENV_ROOT/bin:$PATH" rbenv install {{ ruby_version }}'
+      when: 'ruby_installed|failed'
+
+    - name: 'rbenv | set global ruby {{ ruby_version }}'
+      shell: 'RBENV_ROOT={{ rbenv_root }} PATH="$RBENV_ROOT/bin:$PATH" rbenv global {{ ruby_version }}'
+      when: 'ruby_installed|failed'
+
+    - name: 'rbenv | rehash'
+      shell: 'RBENV_ROOT={{ rbenv_root }} PATH="$RBENV_ROOT/bin:$PATH" rbenv rehash'
+      when: 'ruby_installed|failed'
+
+    - name: 'rbenv | create .gemrc'
+      lineinfile: 'dest={{ home }}/.gemrc owner={{ user }} group={{ user }} mode=0644 line="gem: --no-ri --no-rdoc" create=yes'
+      when: 'ruby_installed|failed'
+
+    - set_fact: rbenv_command="RBENV_ROOT={{ rbenv_root }} PATH="$RBENV_ROOT/bin:$PATH" rbenv exec"
+      tags: always
+
+    - name: 'ruby | install bundler'
+      shell: '{{rbenv_command}} gem install bundler'
+      when: 'ruby_installed|failed'
+
+    - name: 'rbenv | change owner'
+      shell: 'chown -R {{ user }}:{{ user }} {{ rbenv_root }}'
+      when: 'ruby_installed|failed'
+
+    - name: app | stop
+      shell: "kill `cat {{application}}/tmp/pids/server.pid`"
+      ignore_errors: yes
+
+    - name: app | create dir
+      file: path={{release_path}} state=directory
+
+    - name: app | checkout repo
+      git:
+        repo={{ git_repo }}
+        dest={{ release_path }}
+        version={{ git_branch }}
+        accept_hostkey=yes
+        force=yes
+
+    - name: app | bundle install
+      shell: "cd {{application}} && {{rbenv_command}} bundle install --path {{ application }}/bundle --deployment --without development test"
+
+    - set_fact: bundle_command="cd {{application}} && {{rbenv_command}} bundle exec"
+      tags: always
+
+    - name: app | precompile assets
+      shell: "{{bundle_command}} rails assets:precompile"
+
+    - name: app | start
+      shell: "{{bundle_command}} rails server -d --environment {{ rails_env_name }}"
+
+    - name: 'nginx | install'
+      action: 'apt pkg=nginx'
+      when: inventory_hostname == "ec2-52-24-51-160.us-west-2.compute.amazonaws.com"
+
+    - name: 'nginx | check config'
+      command: 'test -f /etc/nginx/sites-enabled/{{ name }}.conf'
+      register: 'nginx_config_copied'
+      ignore_errors: yes
+      when:
+        - inventory_hostname == "ec2-52-24-51-160.us-west-2.compute.amazonaws.com"
+
+    - name: 'nginx | createdir'
+      shell: 'rm /etc/nginx/sites-enabled/default; mkdir -p etc/nginx/sites-enabled/'
+      when:
+        - 'nginx_config_copied|failed'
+        - inventory_hostname == "ec2-52-24-51-160.us-west-2.compute.amazonaws.com"
+
+    - name: 'nginx | copy config'
+      template: 'src=configs/nginx.conf dest=/etc/nginx/sites-enabled/{{ name }}.conf owner=root group=root mode=0644'
+      when:
+        - 'nginx_config_copied|failed'
+        - inventory_hostname == "ec2-52-24-51-160.us-west-2.compute.amazonaws.com"
+
+    - name: 'nginx | restart service'
+      service: name=nginx state=restarted
+      when:
+        - 'nginx_config_copied|failed'
+        - inventory_hostname == "ec2-52-24-51-160.us-west-2.compute.amazonaws.com"

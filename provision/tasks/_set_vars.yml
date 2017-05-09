@@ -1,0 +1,8 @@
+---
+- set_fact: app_name="test_blog"
+- set_fact: ruby_version="2.3.1"
+- set_fact: ruby_gemset="test_blog"
+- set_fact: git_repo="https://github.com/duderman/test_blog.git"
+- set_fact: full_app_name="{{ app_name }}-{{ ansible_env_name }}"
+- set_fact: full_gemset_name="{{ ruby_gemset }}-{{ ansible_env_name }}"
+- set_fact: release_path=/home/{{user}}/test_blog
