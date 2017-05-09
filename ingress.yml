@@ -1,0 +1,115 @@
+---
+apiVersion: v1
+data:
+  body-size: "64m"
+  client-max-body-size: "64m"
+  proxy-body-size: "64m"
+kind: ConfigMap
+metadata:
+  name: nginx-ingress-controller-conf
+  namespace: kube-system
+---
+apiVersion: extensions/v1beta1
+kind: DaemonSet
+metadata:
+  name: nginx
+  namespace: kube-system
+spec:
+  template:
+    metadata:
+      labels:
+        app: nginx
+    spec:
+      containers:
+      - image: gcr.io/google_containers/nginx-ingress-controller:0.9.0-beta.2
+        name: nginx
+        imagePullPolicy: Always
+        env:
+          - name: POD_NAME
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.name
+          - name: POD_NAMESPACE
+            value: default
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 10254
+            scheme: HTTP
+          initialDelaySeconds: 30
+          timeoutSeconds: 5
+        ports:
+        - containerPort: 80
+          hostPort: 80
+        args:
+        - /nginx-ingress-controller
+        - --default-backend-service=kube-system/default-http-backend
+        - --configmap=kube-system/nginx-ingress-controller-conf
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx
+  namespace: kube-system
+spec:
+  ports:
+  - port: 80
+    name: http
+  selector:
+    app: nginx
+---
+apiVersion: extensions/v1beta1
+kind: DaemonSet
+metadata:
+  name: default-http-backend
+  namespace: kube-system
+spec:
+  template:
+    metadata:
+      labels:
+        app: default-http-backend
+    spec:
+      containers:
+      - name: default-http-backend
+        # Any image is permissable as long as:
+        # 1. It serves a 404 page at /
+        # 2. It serves 200 on a /healthz endpoint
+        image: gcr.io/google_containers/defaultbackend:1.0
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+            scheme: HTTP
+          initialDelaySeconds: 30
+          timeoutSeconds: 5
+        ports:
+        - containerPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: default-http-backend
+  namespace: kube-system
+  labels:
+    k8s-app: default-http-backend
+spec:
+  ports:
+  - port: 80
+    targetPort: 8080
+  selector:
+    app: default-http-backend
+---
+apiVersion: extensions/v1beta1
+kind: Ingress
+metadata:
+  name: cluster-ingress
+  annotations:
+    kubernetes.io/ingress.class: "nginx"
+spec:
+  rules:
+  - host: nenorkin.com
+    http:
+      paths:
+      - backend:
+          serviceName: tb-service
+          servicePort: 80
